@@ -19,7 +19,9 @@ jobs:
         python-version: '3.10'
 
     - name: 📦 Install dependencies
-      run: pip install -r requirements.txt
+      run: |
+        pip install -r requirements.txt
+        pip install httpx[http2]  # Install httpx with HTTP/2 support
 
     - name: 📁 Create data directory if not exists
       run: mkdir -p data
