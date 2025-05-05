@@ -1,6 +1,9 @@
 import httpx
-import time
+import zipfile
 import json
+import time
+import os
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -8,104 +11,99 @@ from datetime import datetime, timedelta
 def get_lag_date():
     return (datetime.utcnow() - timedelta(days=7)).strftime('%d-%b-%Y')
 
-# Function to load cookies from a file
-def load_cookies(cookie_file_path):
-    if Path(cookie_file_path).exists():
-        with open(cookie_file_path, 'r') as file:
-            cookies = json.load(file)
-        print(f"✅ Loaded cookies from {cookie_file_path}")
-        return cookies
-    else:
+# Function to get cookies and save them to a file
+def get_cookies(session: httpx.Client, cookie_file_path: str):
+    cookies = session.cookies  # Get cookies from the session
+    cookies_dict = {cookie.key: cookie.value for cookie in cookies}  # Convert to dictionary
+
+    with open(cookie_file_path, 'w') as f:
+        json.dump(cookies_dict, f)
+    print("✅ Cookies saved successfully.")
+
+# Function to load cookies from the file and add them to the session
+def load_cookies(session: httpx.Client, cookie_file_path: str):
+    try:
+        with open(cookie_file_path, 'r') as f:
+            cookies_dict = json.load(f)
+        for key, value in cookies_dict.items():
+            session.cookies.set(key, value)
+        print("✅ Cookies loaded successfully.")
+    except FileNotFoundError:
         print("⚠️ No cookies file found. Fresh cookies will be captured.")
-        return {}
 
-# Function to save cookies to a file
-def save_cookies(cookies, cookie_file_path):
-    with open(cookie_file_path, 'w') as file:
-        json.dump(cookies, file, indent=4)
-    print(f"✅ Saved cookies to {cookie_file_path}")
-
-# Function to capture cookies by accessing the NSE homepage
-def get_cookies(session: httpx.Client, cookie_file_path):
-    url = "https://www.nseindia.com"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+# Function to get the URL for the report zip file for a given date
+def get_report_zip_url(session: httpx.Client, lag_date: str):
+    url = "https://www.nseindia.com/api/reports"
+    params = {
+        "archives": '[{"name":"CM - Margin Trading Disclosure","type":"archives","category":"capital-market","section":"equities"}]',
+        "date": lag_date,
+        "type": "equities",
+        "mode": "single"
     }
 
-    # Make a request to capture cookies
-    session.get(url, headers=headers)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*",
+        "Referer": "https://www.nseindia.com/all-reports",
+        "X-Requested-With": "XMLHttpRequest"
+    }
 
-    # Get cookies from the session and save to file for future use
-    cookies = session.cookies.get_dict()
-    save_cookies(cookies, cookie_file_path)
-
-# Function to fetch the report file URL
-def get_report_file_url(session: httpx.Client, lag_date: str):
-    url = f"https://www.nseindia.com/api/reports?archives=%5B%7B%22name%22%3A%22CM%20-%20Margin%20Trading%20Disclosure%22%2C%22type%22%3A%22archives%22%2C%22category%22%3A%22capital-market%22%2C%22section%22%3A%22equities%22%7D%5D&date={lag_date}&type=equities&mode=single"
-    
-    # Retry logic
     for attempt in range(5):
         try:
             print(f"🔁 Attempt {attempt + 1} to fetch report for {lag_date}...")
-            response = session.get(url)
+            response = session.get(url, headers=headers, params=params)
             response.raise_for_status()
 
-            if response.status_code == 200:
-                if 'Content-Disposition' in response.headers and 'attachment' in response.headers['Content-Disposition']:
-                    print("✅ CSV file located.")
-                    return response
-                else:
-                    print("⚠️ Response received but no CSV headers found.")
+            # Check if the response contains a valid zip file
+            if 'Content-Disposition' in response.headers and 'zip' in response.headers['Content-Type']:
+                print("✅ Zip file located.")
+                return response
             else:
-                print(f"❌ Error: {response.status_code}")
-        
+                print("⚠️ Response received but no zip headers found.")
         except Exception as e:
             print(f"❌ Error: {e}")
             time.sleep(2)
 
     raise Exception("❌ Failed to get report URL after multiple attempts.")
 
-# Function to save the downloaded CSV file
-def save_csv(response: httpx.Response, save_path: Path):
-    with open(save_path, 'wb') as f:
-        f.write(response.content)
-    print(f"✅ CSV saved at: {save_path}")
+# Function to download, unzip and save the CSV file
+def download_and_extract_zip(response: httpx.Response, save_dir: Path):
+    with zipfile.ZipFile(BytesIO(response.content)) as zip_file:
+        zip_file.extractall(save_dir)
+        print("✅ Zip file extracted.")
 
-# Main function to fetch the report
+        # Assuming there is only one CSV file in the zip, we find it
+        for file_name in zip_file.namelist():
+            if file_name.endswith('.csv'):
+                csv_file_path = save_dir / file_name
+                print(f"✅ CSV file found: {csv_file_path}")
+                return csv_file_path
+
+    raise Exception("❌ No CSV file found in the zip archive.")
+
+# Main function to control the flow
 def main():
-    # Paths
-    cookie_file_path = 'cookies.json'  # Path to store cookies
-    lag_date = get_lag_date()  # Get lag date
-    Path("data").mkdir(exist_ok=True)  # Ensure the 'data' directory exists
-    file_name = f"mrg_trading_{lag_date}.csv"  # File name
-    save_path = Path("data") / file_name  # Save path for the CSV
+    lag_date = get_lag_date()
+    cookie_file_path = "cookies.json"
+    save_dir = Path("data")
+    save_dir.mkdir(exist_ok=True)
 
-    # Headers for requests
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "*/*",
-        "Referer": "https://www.nseindia.com"
-    }
+    # Set up session and load cookies
+    with httpx.Client(follow_redirects=True, timeout=10) as session:
+        print("🌐 Priming session with NSE...")
+        load_cookies(session, cookie_file_path)  # Try loading saved cookies
+        session.get("https://www.nseindia.com")  # Ensure cookies are active
+        time.sleep(1)  # Let cookies settle
 
-    # Start an HTTP client session
-    with httpx.Client(http2=True, follow_redirects=True, timeout=10) as session:
-        # Load cookies if they exist
-        cookies = load_cookies(cookie_file_path)
-        if cookies:
-            session.cookies.update(cookies)  # Update session with saved cookies
-            print("🌐 Using saved cookies...")
+        if not Path(cookie_file_path).exists():
+            print("⚠️ No cookies file found. Capturing fresh cookies...")
+            get_cookies(session, cookie_file_path)  # Capture fresh cookies
 
-        # If no cookies or they have expired, get fresh cookies
-        if not cookies:
-            print("🌐 Capturing fresh cookies...")
-            get_cookies(session, cookie_file_path)
-
-        # Fetch the report
         print(f"📅 Fetching report for lag date: {lag_date}")
-        response = get_report_file_url(session, lag_date)
+        response = get_report_zip_url(session, lag_date)
+        csv_file_path = download_and_extract_zip(response, save_dir)
 
-        # Save the CSV file
-        save_csv(response, save_path)
+        print(f"✅ CSV saved at: {csv_file_path}")
 
 if __name__ == "__main__":
     main()
