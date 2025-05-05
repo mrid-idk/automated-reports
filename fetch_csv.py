@@ -1,22 +1,12 @@
-import os
-import requests
+import httpx
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 def get_lag_date():
-    return (datetime.utcnow() - timedelta(days=7)).strftime('%d-%b-%Y')  # example: "30-Apr-2025"
+    return (datetime.utcnow() - timedelta(days=7)).strftime('%d-%b-%Y')
 
-def get_session_with_cookie():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Referer": "https://www.nseindia.com/"
-    })
-    session.get("https://www.nseindia.com", timeout=10)
-    return session
-
-def get_report_file_url(session, lag_date):
+def get_report_file_url(session: httpx.Client, lag_date: str):
     url = "https://www.nseindia.com/api/reports"
     params = {
         "archives": '[{"name":"CM - Margin Trading Disclosure","type":"archives","category":"capital-market","section":"equities"}]',
@@ -25,26 +15,34 @@ def get_report_file_url(session, lag_date):
         "mode": "single"
     }
 
-    response = session.get(url, params=params, timeout=15)
-    response.raise_for_status()
-    data = response.json()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*",
+        "Referer": "https://www.nseindia.com/all-reports",
+        "X-Requested-With": "XMLHttpRequest"
+    }
 
-    if "data" in data and len(data["data"]) > 0 and "reportUrl" in data["data"][0]:
-        report_url = data["data"][0]["reportUrl"]
-        print(f"✅ Found report URL: {report_url}")
-        return report_url
-    else:
-        raise Exception(f"❌ No report URL found in response for date {lag_date}")
+    for attempt in range(5):
+        try:
+            print(f"🔁 Attempt {attempt + 1} to fetch report for {lag_date}...")
+            response = session.get(url, headers=headers, params=params)
+            response.raise_for_status()
 
-def download_csv(report_url, save_path, session):
-    base = "https://www.nseindia.com"
-    full_url = base + report_url
-    response = session.get(full_url, timeout=15)
-    response.raise_for_status()
+            if 'Content-Disposition' in response.headers:
+                print("✅ CSV file located.")
+                return response
+            else:
+                print("⚠️ Response received but no CSV headers found.")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            time.sleep(2)
 
+    raise Exception("❌ Failed to get report URL after multiple attempts.")
+
+def save_csv(response: httpx.Response, save_path: Path):
     with open(save_path, 'wb') as f:
         f.write(response.content)
-    print(f"✅ Downloaded and saved CSV to {save_path}")
+    print(f"✅ CSV saved at: {save_path}")
 
 def main():
     lag_date = get_lag_date()
@@ -52,10 +50,21 @@ def main():
     file_name = f"mrg_trading_{lag_date}.csv"
     save_path = Path("data") / file_name
 
-    session = get_session_with_cookie()
-    report_url = get_report_file_url(session, lag_date)
-    download_csv(report_url, save_path, session)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*",
+        "Referer": "https://www.nseindia.com"
+    }
+
+    with httpx.Client(http2=True, follow_redirects=True, timeout=10) as session:
+        print("🌐 Priming session with NSE...")
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com")
+        time.sleep(1)  # Let cookies settle
+
+        print(f"📅 Fetching report for lag date: {lag_date}")
+        response = get_report_file_url(session, lag_date)
+        save_csv(response, save_path)
 
 if __name__ == "__main__":
     main()
-
