@@ -44,6 +44,20 @@ def save_csv(response: httpx.Response, save_path: Path):
         f.write(response.content)
     print(f"✅ CSV saved at: {save_path}")
 
+def get_cookies(session: httpx.Client):
+    # Send a request to the homepage to capture necessary cookies
+    url = "https://www.nseindia.com"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    }
+
+    # Perform a GET request to capture cookies
+    session.get(url, headers=headers)
+    
+    # At this point, session.cookies contains the cookies set by the website
+    # You can inspect them if needed (optional)
+    print("Cookies captured:", session.cookies)
+
 def main():
     lag_date = get_lag_date()
     Path("data").mkdir(exist_ok=True)
@@ -58,10 +72,12 @@ def main():
 
     with httpx.Client(http2=True, follow_redirects=True, timeout=10) as session:
         print("🌐 Priming session with NSE...")
+        # Capture cookies by sending an initial request to the homepage
+        get_cookies(session)
+        
         session.headers.update(headers)
-        session.get("https://www.nseindia.com")
-        time.sleep(1)  # Let cookies settle
-
+        
+        # Now that we have the session with cookies, fetch the report
         print(f"📅 Fetching report for lag date: {lag_date}")
         response = get_report_file_url(session, lag_date)
         save_csv(response, save_path)
