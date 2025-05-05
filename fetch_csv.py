@@ -51,7 +51,7 @@ def get_report_zip_url(session: httpx.Client, lag_date: str):
     for attempt in range(5):
         try:
             print(f"🔁 Attempt {attempt + 1} to fetch report for {lag_date}...")
-            response = session.get(url, headers=headers, params=params)
+            response = session.get(url, headers=headers, params=params, timeout=30)  # Increased timeout
             response.raise_for_status()
 
             # Check if the response contains a valid zip file
@@ -60,9 +60,16 @@ def get_report_zip_url(session: httpx.Client, lag_date: str):
                 return response
             else:
                 print("⚠️ Response received but no zip headers found.")
+        except httpx.RequestError as e:
+            print(f"❌ Error: Request failed ({e})")
+        except httpx.TimeoutException as e:
+            print(f"❌ Error: Timeout occurred ({e})")
         except Exception as e:
             print(f"❌ Error: {e}")
-            time.sleep(2)
+
+        # Retry with a delay if error occurs
+        print("⏳ Retrying in 5 seconds...")
+        time.sleep(5)
 
     raise Exception("❌ Failed to get report URL after multiple attempts.")
 
@@ -89,7 +96,7 @@ def main():
     save_dir.mkdir(exist_ok=True)
 
     # Set up session and load cookies
-    with httpx.Client(follow_redirects=True, timeout=10) as session:
+    with httpx.Client(follow_redirects=True, timeout=30) as session:  # Increased timeout
         print("🌐 Priming session with NSE...")
         load_cookies(session, cookie_file_path)  # Try loading saved cookies
         session.get("https://www.nseindia.com")  # Ensure cookies are active
